@@ -1,0 +1,50 @@
+{
+  "name": "rescue-backend",
+  "version": "1.0.0",
+  "description": "Pet Rescue API - Bun + Hono + Prisma",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "test:unit": "bun test tests/unit",
+    "test:integration": "bun test tests/integration",
+    "test:coverage": "bun test --coverage",
+    "lint": "bunx @biomejs/biome check src/",
+    "lint:fix": "bunx @biomejs/biome check --apply src/",
+    "db:generate": "bunx prisma generate",
+    "db:migrate": "bunx prisma migrate dev",
+    "db:deploy": "bunx prisma migrate deploy",
+    "db:push": "bunx prisma db push",
+    "db:studio": "bunx prisma studio",
+    "db:reset": "bunx prisma migrate reset --force",
+    "db:validate": "bunx prisma validate && bunx prisma migrate status",
+    "precommit": "bunx prisma validate && bunx tsc --noEmit",
+    "docker:up": "docker compose -f docker-compose.dev.yml up -d",
+    "docker:down": "docker compose -f docker-compose.dev.yml down",
+    "docker:reset": "docker compose -f docker-compose.dev.yml down -v && docker compose -f docker-compose.dev.yml up -d"
+  },
+  "dependencies": {
+    "@hono/sentry": "^1.2.0",
+    "@hono/zod-validator": "^0.4.0",
+    "@prisma/adapter-pg": "^7.2.0",
+    "@prisma/client": "^7.2.0",
+    "@sentry/bun": "^8.0.0",
+    "cloudinary": "^2.5.0",
+    "firebase-admin": "^12.7.0",
+    "hono": "^4.6.0",
+    "jsonwebtoken": "^9.0.2",
+    "mixpanel": "^0.18.0",
+    "node-cron": "^3.0.3",
+    "pg": "^8.16.3",
+    "twilio": "^5.11.1",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "latest",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node-cron": "^3.0.11",
+    "prisma": "^7.2.0"
+  }
+}

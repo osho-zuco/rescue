@@ -1,0 +1,412 @@
+# Druto - AI Assistant Rules
+
+> Digital loyalty stamp cards that actually work.
+
+## Quick Reference
+
+| Doc | Purpose |
+|-----|---------|
+| `documents/1.product_vision.md` | Business model, key decisions, personas |
+| `documents/2.architecture.md` | Tech stack, patterns, SOLID principles |
+| `documents/3.database_and_api.md` | Schema reference, API endpoints |
+| `documents/8.ui_wireframes.md` | Screen specs for Flutter apps |
+
+---
+
+## Project Structure
+
+```
+/druto/
+├── backend/              # Bun + Hono + Prisma API
+├── packages/
+│   └── druto_core/       # Shared Flutter package
+├── apps/
+│   ├── druto_merchant/   # Merchant Flutter app
+│   └── druto_user/       # Customer Flutter app
+└── documents/            # Documentation
+```
+
+---
+
+## Tech Stack
+
+**Backend:** Bun + Hono + TypeScript + Prisma + PostgreSQL
+**Flutter:** BLoC + GetIt + go_router + Freezed + Dio
+**Auth:** Custom OTP (Twilio/MSG91 abstraction) - NOT Firebase Auth
+**Payments:** Gateway abstraction (Razorpay/Cashfree)
+
+---
+
+## Key Business Rules
+
+| Rule | Implementation |
+|------|----------------|
+| Geofenced stamps | User must be within 50m of merchant |
+| Daily limit | 1 stamp per merchant per day |
+| Mid-streak protection | StampCard has `lockedStampsRequired`, `lockedRewardTitle` |
+| UPI-based | We don't process payments, customer pays merchant directly |
+| Roles | CUSTOMER, MERCHANT_OWNER, ADMIN |
+
+---
+
+## Coding Rules
+
+### Backend (TypeScript)
+
+**Result Pattern - No throwing:**
+```typescript
+// ✅ GOOD
+async function collectStamp(userId: string, merchantId: string): Promise<Result<Stamp, StampError>> {
+  if (!merchant) return err({ code: 'MERCHANT_NOT_FOUND', message: '...' });
+  return ok(stamp);
+}
+
+// ❌ BAD
+async function collectStamp(...) {
+  if (!merchant) throw new Error('Not found');
+}
+```
+
+**Zod Validation:**
+```typescript
+const collectStampSchema = z.object({
+  merchantId: z.string().uuid(),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+});
+```
+
+**Provider Abstractions:**
+- OTP: `IOtpProvider` → TwilioProvider, Msg91Provider
+- Payments: `IPaymentGateway` → RazorpayGateway, CashfreeGateway
+- Use factories to get configured provider
+
+**Prisma Migrations:**
+```bash
+# ✅ CORRECT - Always use CLI
+bunx prisma migrate dev --name add_new_field
+
+# ❌ WRONG - Never create manually
+mkdir prisma/migrations/20240115_xyz/
+```
+
+### Flutter (Dart)
+
+**BLoC Pattern:**
+```dart
+// State management with BLoC, not Provider
+class StampBloc extends Bloc<StampEvent, StampState> {
+  StampBloc(this._repository) : super(StampInitial()) {
+    on<CollectStamp>(_onCollectStamp);
+  }
+}
+```
+
+**Result Pattern in Repositories:**
+```dart
+// ✅ GOOD - Repository catches, logs, returns Result
+Future<Result<Stamp, ApiError>> collectStamp(String merchantId) async {
+  try {
+    final response = await dio.post('/stamps/collect', ...);
+    return Ok(Stamp.fromJson(response.data['data']));
+  } catch (e, stackTrace) {
+    Log.e('Failed to collect stamp', error: e, stackTrace: stackTrace);
+    return Err(ApiError.fromDioError(e));
+  }
+}
+
+// ✅ GOOD - Presentation uses Result.when, no try-catch
+final result = await repository.collectStamp(merchantId);
+result.when(
+  ok: (stamp) => emit(StampCollected(stamp)),
+  err: (error) => emit(StampError(error.message)),
+);
+
+// ❌ BAD - Don't try-catch in presentation layer
+try {
+  final result = await repository.collectStamp(merchantId);
+} catch (e) {
+  // Error not logged to Sentry!
+}
+```
+
+**Safe API Response Parsing:**
+```dart
+// ✅ GOOD - Validate before casting
+final responseData = response.data;
+if (responseData is! Map<String, dynamic>) {
+  throw Exception('Invalid response format');
+}
+final data = responseData['data'] as Map<String, dynamic>?;
+
+// ❌ BAD - Causes SIGABRT crashes
+response.data['data'] as Map<String, dynamic>
+```
+
+**Never Use Bang Operator:**
+```dart
+// ✅ GOOD
+final name = user?.name ?? 'Unknown';
+if (value != null) { ... }
+
+// ❌ BAD - Runtime crashes
+final name = user!.name;
+```
+
+**Theme Colors - Never Hardcode:**
+```dart
+// ✅ GOOD
+Theme.of(context).colorScheme.primary
+AppColors.primary  // From druto_core
+
+// ❌ BAD
+Colors.red
+Color(0xFFFF6B6B)
+```
+
+**UTC to Local Time:**
+```dart
+// ✅ GOOD - Use helpers
+formatDateTime(date)  // "Jan 2, 4:30 PM"
+formatDate(date)      // "Jan 2, 2024"
+
+// ❌ BAD - Shows UTC
+DateFormat('MMM d').format(date)
+```
+
+---
+
+## Color Palette
+
+```
+Primary:   #FF6B6B (Coral Red) - CTAs, stamps
+Secondary: #4ECDC4 (Mint Teal) - Success, rewards
+Tertiary:  #2C3E50 (Navy) - Text, trust
+Warning:   #FFE66D (Soft Yellow)
+Star:      #FFD93D (Golden)
+```
+
+---
+
+## API Conventions
+
+**Base URL:** `/api/v1`
+
+**Response Format:**
+```json
+{
+  "success": true,
+  "data": { ... },
+  "meta": { "requestId": "...", "timestamp": "..." }
+}
+```
+
+**Error Format:**
+```json
+{
+  "success": false,
+  "error": { "code": "DAILY_LIMIT_REACHED", "message": "..." }
+}
+```
+
+**Common Error Codes:**
+- `MERCHANT_NOT_FOUND` - Invalid merchant ID
+- `OUT_OF_RANGE` - User too far (>50m)
+- `DAILY_LIMIT_REACHED` - Already stamped today
+- `REWARD_NOT_ACTIVE` - Reward deactivated
+- `NOT_ENOUGH_STAMPS` - Can't redeem yet
+
+---
+
+## Stamp Collection Flow
+
+```
+1. User scans QR → App gets merchantId
+2. Validate: merchant exists, is active
+3. Validate: user within 50m (geofence)
+4. Validate: no stamp today (daily limit)
+5. Get/create StampCard (with locked reward terms)
+6. Create Stamp record
+7. If currentStamps == lockedStampsRequired:
+   → Update status to READY_TO_REDEEM
+8. Return stamp + card + isComplete flag
+```
+
+---
+
+## Testing
+
+```bash
+# Backend
+bun test
+
+# Flutter
+flutter test
+flutter analyze
+```
+
+---
+
+## GitHub Workflow
+
+### Branch Strategy
+
+```
+main        ← Production releases only (protected)
+  ↑
+develop     ← Integration branch (default, protected)
+  ↑
+feature/*   ← Feature branches
+fix/*       ← Bug fixes
+```
+
+### Branch Protection
+
+Both `main` and `develop` are protected:
+- Requires 1 approval before merge
+- Stale approvals dismissed on new commits
+- No force pushes
+- No deletions
+
+### Feature Development Workflow
+
+**1. Create GitHub Issue first:**
+```bash
+# Create a feature issue
+gh issue create --title "feat(stamps): add geofence validation" \
+  --body "## Description
+Add 50m geofence check for stamp collection.
+
+## Tasks
+- [ ] Add distance calculation helper
+- [ ] Validate location in collect endpoint
+- [ ] Return appropriate error if out of range" \
+  --label "enhancement"
+
+# Create a bug fix issue
+gh issue create --title "fix(auth): handle expired OTP" \
+  --body "OTP verification fails silently when expired." \
+  --label "bug"
+```
+
+**2. Create branch from issue:**
+```bash
+# This creates a branch linked to the issue
+gh issue develop <issue-number> --checkout
+
+# Branch name auto-generated: <issue-number>-feat-stamps-add-geofence-validation
+```
+
+**3. Make changes & commit:**
+```bash
+git add .
+git commit -m "feat(stamps): add geofence validation"
+```
+
+**4. Push & create PR:**
+```bash
+git push -u origin HEAD
+gh pr create --base develop --title "feat(stamps): add geofence validation" --body "$(cat <<'EOF'
+## Summary
+- Added 50m geofence validation for stamp collection
+
+## Changes
+- Added `calculateDistance()` helper using Haversine formula
+- Validate user location in `/stamps/collect` endpoint
+
+Fixes #<issue-number>
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```
+
+**5. After approval, merge to develop**
+
+**6. Release to production:**
+```bash
+git checkout main
+git pull origin main
+git merge develop
+git push origin main
+```
+
+### Issue Labels
+
+| Label | Description |
+|-------|-------------|
+| `enhancement` | New feature |
+| `bug` | Bug fix |
+| `documentation` | Docs only |
+| `backend` | Backend changes |
+| `flutter` | Flutter app changes |
+| `priority:high` | Urgent |
+
+### Commit Message Convention
+
+```
+type(scope): description
+
+Types: feat, fix, docs, refactor, test, chore
+Scope: auth, stamps, rewards, merchant, user, backend, core
+```
+
+Examples:
+- `feat(stamps): add geofence validation`
+- `fix(auth): handle expired OTP`
+- `docs: update API reference`
+
+### Quick Reference
+
+```bash
+# Create issue
+gh issue create --title "type(scope): description" --label "enhancement"
+
+# Create branch from issue (auto-links in GitHub)
+gh issue develop <N> --checkout
+
+# View issue
+gh issue view <N>
+
+# Create PR that closes issue
+gh pr create --base develop --body "Fixes #N"
+```
+
+---
+
+## Implementation Flow
+
+1. Read relevant doc section
+2. Check if schema exists in Prisma
+3. Implement backend API first
+4. Build Flutter UI from wireframe specs
+5. Test manually
+
+---
+
+## Session Handoff
+
+Start new sessions with:
+> "Read .cursorrules and continue from where we left off."
+
+---
+
+## Help Templates
+
+**New feature:** "Let's implement [feature]. Step by step."
+**Flutter screen:** "Build the [screen] from wireframes. Step by step."
+**Stuck:** "Getting [error]. Tried [X]. What am I missing?"
+**API endpoint:** "Implement the [endpoint] from the API docs."
+
+---
+
+## Don'ts
+
+- ❌ Don't use Firebase Auth (we have custom OTP)
+- ❌ Don't throw exceptions (use Result pattern)
+- ❌ Don't hardcode colors (use theme/AppColors)
+- ❌ Don't use bang operator (use null-aware)
+- ❌ Don't skip geofence validation
+- ❌ Don't allow multiple stamps per day
+- ❌ Don't modify locked fields on existing StampCards
+- ❌ Don't process payments (UPI is external)

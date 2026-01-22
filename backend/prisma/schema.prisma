@@ -1,0 +1,134 @@
+// Rescue - Pet Rescue Platform
+// Database schema for PostgreSQL
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// User - People using the rescue app
+// ============================================
+
+model User {
+  id              String   @id @default(uuid())
+  phone           String   @unique
+  name            String?
+  profilePhotoUrl String?
+  role            UserRole @default(USER)
+
+  // Notification preferences
+  notifyRescue    Boolean @default(true) // Get rescue alerts
+  notifyAdoption  Boolean @default(true) // Get adoption alerts
+  notifySuccess   Boolean @default(false) // Get success story alerts
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  reportedPets  Pet[]                @relation("ReportedPets")
+  rescuedPets   Pet[]                @relation("RescuedPets")
+  adoptedPets   Pet[]                @relation("AdoptedPets")
+  statusChanges PetStatusHistory[]
+
+  @@index([phone])
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+// ============================================
+// Pet - Animals needing rescue/adoption
+// ============================================
+
+model Pet {
+  id           String @id @default(uuid())
+  reportedById String
+  reportedBy   User   @relation("ReportedPets", fields: [reportedById], references: [id])
+
+  name    String? // Optional name
+  species String // "dog", "cat", "bird", "other"
+  breed   String?
+  age     String? // "puppy", "adult", "senior", or specific
+  gender  String? // "male", "female", "unknown"
+
+  // Location
+  latitude        Decimal @db.Decimal(10, 8)
+  longitude       Decimal @db.Decimal(11, 8)
+  locationAddress String
+  locationNotes   String? // "near MG Road metro"
+
+  // Status tracking
+  status PetStatus
+
+  // Help needed stage
+  distressNotes String? // Initial report notes
+  reportedAt    DateTime @default(now())
+
+  // Help reached stage
+  rescuedById String?
+  rescuer     User?    @relation("RescuedPets", fields: [rescuedById], references: [id])
+  rescuedAt   DateTime?
+
+  // Searching adoption stage
+  healthStatus  String? // "healthy", "injured", "needs vet care"
+  temperament   String? // "friendly", "shy", "active"
+  adoptionNotes String? // Requirements for adopter
+  rescuerPhone  String? // Phone number for coordination
+
+  // Adopted stage
+  adoptedById String?
+  adopter     User?    @relation("AdoptedPets", fields: [adoptedById], references: [id])
+  adoptedAt   DateTime?
+  successStory String? // Happy story for success feed
+  adopterPhone String? // Phone number (shown after adoption)
+
+  // Media
+  photos String[] // Array of Cloudinary URLs
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  statusHistory PetStatusHistory[]
+
+  @@index([status, latitude, longitude])
+  @@index([reportedById])
+  @@index([rescuedById])
+  @@index([adoptedById])
+  @@index([species])
+  @@index([reportedAt])
+}
+
+enum PetStatus {
+  HELP_NEEDED
+  HELP_REACHED
+  SEARCHING_ADOPTION
+  ADOPTED
+}
+
+// ============================================
+// Pet Status History - Audit trail
+// ============================================
+
+model PetStatusHistory {
+  id         String     @id @default(uuid())
+  petId      String
+  pet        Pet        @relation(fields: [petId], references: [id], onDelete: Cascade)
+  fromStatus PetStatus?
+  toStatus   PetStatus
+  changedBy  String
+  user       User       @relation(fields: [changedBy], references: [id])
+  changedAt  DateTime   @default(now())
+  notes      String? // Optional notes on status change
+
+  @@index([petId])
+  @@index([changedAt])
+}

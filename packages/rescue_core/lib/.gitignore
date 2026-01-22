@@ -1,0 +1,47 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Backend
+backend/node_modules/
+backend/dist/
+backend/.DS_Store
+
+# Flutter
+**/android/
+**/ios/
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/pubspec.lock
+**/*.g.dart
+**/*.freezed.dart
+
+# IDE
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Firebase
+**/google-services.json
+**/GoogleService-Info.plist
+
+# Secrets
+*.pem
+*.key
+credentials.json
+service-account.json

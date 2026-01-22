@@ -30,10 +30,11 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Relations
-  reportedPets  Pet[]                @relation("ReportedPets")
-  rescuedPets   Pet[]                @relation("RescuedPets")
-  adoptedPets   Pet[]                @relation("AdoptedPets")
-  statusChanges PetStatusHistory[]
+  reportedRescues  Rescue[]   @relation("ReportedRescues")
+  rescues          Rescue[]   @relation("RescuerRescues")
+  adoptions        Adoption[] @relation("AdopterAdoptions")
+  rescueHistory    RescueStatusHistory[]
+  adoptionHistory  AdoptionStatusHistory[]
 
   @@index([phone])
 }
@@ -44,50 +45,37 @@ enum UserRole {
 }
 
 // ============================================
-// Pet - Animals needing rescue/adoption
+// Rescue - Initial rescue alert (can be multiple animals)
 // ============================================
 
-model Pet {
+model Rescue {
   id           String @id @default(uuid())
   reportedById String
-  reportedBy   User   @relation("ReportedPets", fields: [reportedById], references: [id])
+  reportedBy   User   @relation("ReportedRescues", fields: [reportedById], references: [id])
 
-  name    String? // Optional name
+  // Multiple animals possible
+  quantity Int @default(1) // How many animals
+
   species String // "dog", "cat", "bird", "other"
-  breed   String?
-  age     String? // "puppy", "adult", "senior", or specific
-  gender  String? // "male", "female", "unknown"
 
-  // Location
+  // Rescue site location (never changes)
   latitude        Decimal @db.Decimal(10, 8)
   longitude       Decimal @db.Decimal(11, 8)
   locationAddress String
-  locationNotes   String? // "near MG Road metro"
+  locationNotes   String? // "near MG Road metro, behind bus stop"
 
   // Status tracking
-  status PetStatus
+  status RescueStatus
 
   // Help needed stage
-  distressNotes String? // Initial report notes
+  distressNotes String // Initial report: "3 puppies, injured, need immediate help"
   reportedAt    DateTime @default(now())
 
   // Help reached stage
   rescuedById String?
-  rescuer     User?    @relation("RescuedPets", fields: [rescuedById], references: [id])
+  rescuer     User?    @relation("RescuerRescues", fields: [rescuedById], references: [id])
   rescuedAt   DateTime?
-
-  // Searching adoption stage
-  healthStatus  String? // "healthy", "injured", "needs vet care"
-  temperament   String? // "friendly", "shy", "active"
-  adoptionNotes String? // Requirements for adopter
-  rescuerPhone  String? // Phone number for coordination
-
-  // Adopted stage
-  adoptedById String?
-  adopter     User?    @relation("AdoptedPets", fields: [adoptedById], references: [id])
-  adoptedAt   DateTime?
-  successStory String? // Happy story for success feed
-  adopterPhone String? // Phone number (shown after adoption)
+  rescueNotes String? // "Took all 3 to vet, 1 critical"
 
   // Media
   photos String[] // Array of Cloudinary URLs
@@ -97,38 +85,119 @@ model Pet {
   updatedAt DateTime @updatedAt
 
   // Relations
-  statusHistory PetStatusHistory[]
+  adoptions     Adoption[] // Individual adoptions created from this rescue
+  statusHistory RescueStatusHistory[]
 
   @@index([status, latitude, longitude])
   @@index([reportedById])
   @@index([rescuedById])
-  @@index([adoptedById])
   @@index([species])
   @@index([reportedAt])
 }
 
-enum PetStatus {
+enum RescueStatus {
   HELP_NEEDED
   HELP_REACHED
+  COMPLETED // All animals adopted or handled
+}
+
+// ============================================
+// Adoption - Individual animal ready for adoption
+// ============================================
+
+model Adoption {
+  id        String  @id @default(uuid())
+  rescueId  String? // Link back to original rescue (optional)
+  rescue    Rescue? @relation(fields: [rescueId], references: [id])
+
+  rescuedById String // Who is fostering/offering for adoption
+  rescuedBy   User   @relation("RescuerRescues", fields: [rescuedById], references: [id])
+
+  name    String? // Optional name given by rescuer
+  species String // "dog", "cat", "bird", "other"
+  breed   String?
+  age     String? // "puppy", "adult", "senior", or "~3 months"
+  gender  String? // "male", "female", "unknown"
+
+  // Foster/Adoption location (rescuer's home)
+  latitude        Decimal @db.Decimal(10, 8)
+  longitude       Decimal @db.Decimal(11, 8)
+  locationAddress String
+  locationNotes   String? // "Koramangala 5th Block, my foster home"
+
+  // Status
+  status AdoptionStatus
+
+  // Adoption details
+  healthStatus  String? // "healthy", "injured", "recovering", "needs vet care"
+  temperament   String? // "friendly", "shy", "active", "calm"
+  adoptionNotes String? // "Good with kids, needs fenced yard"
+  rescuerPhone  String  // Phone number for coordination
+
+  // Photos at foster location
+  photos String[] // Array of Cloudinary URLs
+
+  // Adopted stage
+  adoptedById String?
+  adopter     User?    @relation("AdopterAdoptions", fields: [adoptedById], references: [id])
+  adoptedAt   DateTime?
+  successStory String? // Happy story for success feed
+  adopterPhone String? // Phone number (shown after adoption)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  statusHistory AdoptionStatusHistory[]
+
+  @@index([status, latitude, longitude])
+  @@index([rescuedById])
+  @@index([adoptedById])
+  @@index([species])
+  @@index([rescueId])
+  @@index([createdAt])
+}
+
+enum AdoptionStatus {
   SEARCHING_ADOPTION
   ADOPTED
 }
 
 // ============================================
-// Pet Status History - Audit trail
+// Rescue Status History - Audit trail
 // ============================================
 
-model PetStatusHistory {
-  id         String     @id @default(uuid())
-  petId      String
-  pet        Pet        @relation(fields: [petId], references: [id], onDelete: Cascade)
-  fromStatus PetStatus?
-  toStatus   PetStatus
+model RescueStatusHistory {
+  id         String       @id @default(uuid())
+  rescueId   String
+  rescue     Rescue       @relation(fields: [rescueId], references: [id], onDelete: Cascade)
+  fromStatus RescueStatus?
+  toStatus   RescueStatus
   changedBy  String
-  user       User       @relation(fields: [changedBy], references: [id])
-  changedAt  DateTime   @default(now())
+  user       User         @relation(fields: [changedBy], references: [id])
+  changedAt  DateTime     @default(now())
   notes      String? // Optional notes on status change
 
-  @@index([petId])
+  @@index([rescueId])
+  @@index([changedAt])
+}
+
+// ============================================
+// Adoption Status History - Audit trail
+// ============================================
+
+model AdoptionStatusHistory {
+  id         String         @id @default(uuid())
+  adoptionId String
+  adoption   Adoption       @relation(fields: [adoptionId], references: [id], onDelete: Cascade)
+  fromStatus AdoptionStatus?
+  toStatus   AdoptionStatus
+  changedBy  String
+  user       User           @relation(fields: [changedBy], references: [id])
+  changedAt  DateTime       @default(now())
+  notes      String? // Optional notes on status change
+
+  @@index([adoptionId])
   @@index([changedAt])
 }

@@ -1,28 +1,27 @@
-# Druto - AI Assistant Rules
+# Paws - Pet Rescue Platform - AI Assistant Rules
 
-> Digital loyalty stamp cards that actually work.
+> Map-first pet rescue app. Community gift. 2-day sprint. No feature creep.
 
 ## Quick Reference
 
 | Doc | Purpose |
 |-----|---------|
-| `documents/1.product_vision.md` | Business model, key decisions, personas |
-| `documents/2.architecture.md` | Tech stack, patterns, SOLID principles |
-| `documents/3.database_and_api.md` | Schema reference, API endpoints |
-| `documents/8.ui_wireframes.md` | Screen specs for Flutter apps |
+| `SCHEMA_FLOW.md` | Rescue vs Adoption models, complete flow example |
+| `2DAY_SPRINT.md` | 2-day development checklist |
+| `documents/PRODUCT_REQUIREMENTS.md` | Full PRD with map-first vision |
+| `documents/IMPLEMENTATION_ROADMAP.md` | 8-week detailed roadmap |
 
 ---
 
 ## Project Structure
 
 ```
-/druto/
+/rescue/
 ├── backend/              # Bun + Hono + Prisma API
 ├── packages/
-│   └── druto_core/       # Shared Flutter package
+│   └── rescue_core/      # Shared Flutter package
 ├── apps/
-│   ├── druto_merchant/   # Merchant Flutter app
-│   └── druto_user/       # Customer Flutter app
+│   └── rescue_app/       # Main Flutter app (to be created)
 └── documents/            # Documentation
 ```
 
@@ -31,9 +30,11 @@
 ## Tech Stack
 
 **Backend:** Bun + Hono + TypeScript + Prisma + PostgreSQL
-**Flutter:** BLoC + GetIt + go_router + Freezed + Dio
-**Auth:** Custom OTP (Twilio/MSG91 abstraction) - NOT Firebase Auth
-**Payments:** Gateway abstraction (Razorpay/Cashfree)
+**Flutter:** BLoC + GetIt + go_router + Dio + Google Maps
+**Auth:** Custom OTP (MSG91) - NOT Firebase Auth
+**Images:** Cloudinary (direct upload)
+**Notifications:** Firebase Cloud Messaging
+**Deployment:** Railway (backend), APK (Flutter)
 
 ---
 
@@ -41,11 +42,27 @@
 
 | Rule | Implementation |
 |------|----------------|
-| Geofenced stamps | User must be within 50m of merchant |
-| Daily limit | 1 stamp per merchant per day |
-| Mid-streak protection | StampCard has `lockedStampsRequired`, `lockedRewardTitle` |
-| UPI-based | We don't process payments, customer pays merchant directly |
-| Roles | CUSTOMER, MERCHANT_OWNER, ADMIN |
+| Multiple animals | Rescue can have quantity > 1, creates separate Adoptions |
+| Location changes | Rescue site → Foster home location when creating Adoptions |
+| Status flow | HELP_NEEDED → HELP_REACHED → SEARCHING_ADOPTION → ADOPTED |
+| WhatsApp coordination | No in-app chat, just contact button |
+| 3 map layers | Rescue (red), Adoption (yellow), Success (green, 7-day TTL) |
+| Roles | USER, ADMIN (no complex roles) |
+
+---
+
+## Data Models
+
+### Rescue (Red Pins - 🚨 Help Needed)
+- Can represent multiple animals (quantity field)
+- Location: Rescue site (never changes)
+- Status: HELP_NEEDED → HELP_REACHED → COMPLETED
+
+### Adoption (Yellow/Green Pins - 🏠 Adoption / ✨ Success)
+- One animal per record
+- Location: Foster home (rescuer's location)
+- Status: SEARCHING_ADOPTION → ADOPTED
+- Links back to original Rescue via `rescueId`
 
 ---
 
@@ -56,35 +73,39 @@
 **Result Pattern - No throwing:**
 ```typescript
 // ✅ GOOD
-async function collectStamp(userId: string, merchantId: string): Promise<Result<Stamp, StampError>> {
-  if (!merchant) return err({ code: 'MERCHANT_NOT_FOUND', message: '...' });
-  return ok(stamp);
+async function getRescue(id: string): Promise<Result<Rescue, ApiError>> {
+  const rescue = await prisma.rescue.findUnique({ where: { id } });
+  if (!rescue) return err({ code: 'RESCUE_NOT_FOUND', message: '...' });
+  return ok(rescue);
 }
 
 // ❌ BAD
-async function collectStamp(...) {
-  if (!merchant) throw new Error('Not found');
+async function getRescue(id: string) {
+  const rescue = await prisma.rescue.findUnique({ where: { id } });
+  if (!rescue) throw new Error('Not found');
 }
 ```
 
 **Zod Validation:**
 ```typescript
-const collectStampSchema = z.object({
-  merchantId: z.string().uuid(),
+const createRescueSchema = z.object({
+  quantity: z.number().int().min(1).max(20),
+  species: z.enum(['dog', 'cat', 'bird', 'other']),
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
+  distressNotes: z.string().min(10).max(500),
+  photos: z.array(z.string().url()).min(1).max(5),
 });
 ```
 
 **Provider Abstractions:**
-- OTP: `IOtpProvider` → TwilioProvider, Msg91Provider
-- Payments: `IPaymentGateway` → RazorpayGateway, CashfreeGateway
+- OTP: `IOtpProvider` → Msg91Provider, TwilioProvider
 - Use factories to get configured provider
 
 **Prisma Migrations:**
 ```bash
 # ✅ CORRECT - Always use CLI
-bunx prisma migrate dev --name add_new_field
+bunx prisma migrate dev --name add_adoption_model
 
 # ❌ WRONG - Never create manually
 mkdir prisma/migrations/20240115_xyz/
@@ -95,9 +116,10 @@ mkdir prisma/migrations/20240115_xyz/
 **BLoC Pattern:**
 ```dart
 // State management with BLoC, not Provider
-class StampBloc extends Bloc<StampEvent, StampState> {
-  StampBloc(this._repository) : super(StampInitial()) {
-    on<CollectStamp>(_onCollectStamp);
+class RescueBloc extends Bloc<RescueEvent, RescueState> {
+  RescueBloc(this._repository) : super(RescueInitial()) {
+    on<LoadRescuesForMap>(_onLoadRescuesForMap);
+    on<MarkHelpReached>(_onMarkHelpReached);
   }
 }
 ```
@@ -105,26 +127,26 @@ class StampBloc extends Bloc<StampEvent, StampState> {
 **Result Pattern in Repositories:**
 ```dart
 // ✅ GOOD - Repository catches, logs, returns Result
-Future<Result<Stamp, ApiError>> collectStamp(String merchantId) async {
+Future<Result<Rescue, ApiError>> createRescue(CreateRescueRequest request) async {
   try {
-    final response = await dio.post('/stamps/collect', ...);
-    return Ok(Stamp.fromJson(response.data['data']));
+    final response = await dio.post('/rescues', data: request.toJson());
+    return Ok(Rescue.fromJson(response.data['data']));
   } catch (e, stackTrace) {
-    Log.e('Failed to collect stamp', error: e, stackTrace: stackTrace);
+    Log.e('Failed to create rescue', error: e, stackTrace: stackTrace);
     return Err(ApiError.fromDioError(e));
   }
 }
 
 // ✅ GOOD - Presentation uses Result.when, no try-catch
-final result = await repository.collectStamp(merchantId);
+final result = await repository.createRescue(request);
 result.when(
-  ok: (stamp) => emit(StampCollected(stamp)),
-  err: (error) => emit(StampError(error.message)),
+  ok: (rescue) => emit(RescueCreated(rescue)),
+  err: (error) => emit(RescueError(error.message)),
 );
 
 // ❌ BAD - Don't try-catch in presentation layer
 try {
-  final result = await repository.collectStamp(merchantId);
+  final result = await repository.createRescue(request);
 } catch (e) {
   // Error not logged to Sentry!
 }
@@ -157,7 +179,7 @@ final name = user!.name;
 ```dart
 // ✅ GOOD
 Theme.of(context).colorScheme.primary
-AppColors.primary  // From druto_core
+AppColors.primary  // From rescue_core
 
 // ❌ BAD
 Colors.red
@@ -176,14 +198,15 @@ DateFormat('MMM d').format(date)
 
 ---
 
-## Color Palette
+## Color Palette (Map-First Design)
 
 ```
-Primary:   #FF6B6B (Coral Red) - CTAs, stamps
-Secondary: #4ECDC4 (Mint Teal) - Success, rewards
-Tertiary:  #2C3E50 (Navy) - Text, trust
-Warning:   #FFE66D (Soft Yellow)
-Star:      #FFD93D (Golden)
+Red:       #EF4444 - Rescue alerts (HELP_NEEDED)
+Yellow:    #F59E0B - Adoption ready (SEARCHING_ADOPTION)
+Green:     #10B981 - Success stories (ADOPTED)
+Gray:      #6B7280 - Completed/archived
+Primary:   #3B82F6 - CTAs, buttons
+Text:      #1F2937 - Dark text
 ```
 
 ---
@@ -205,31 +228,32 @@ Star:      #FFD93D (Golden)
 ```json
 {
   "success": false,
-  "error": { "code": "DAILY_LIMIT_REACHED", "message": "..." }
+  "error": { "code": "RESCUE_NOT_FOUND", "message": "..." }
 }
 ```
 
 **Common Error Codes:**
-- `MERCHANT_NOT_FOUND` - Invalid merchant ID
-- `OUT_OF_RANGE` - User too far (>50m)
-- `DAILY_LIMIT_REACHED` - Already stamped today
-- `REWARD_NOT_ACTIVE` - Reward deactivated
-- `NOT_ENOUGH_STAMPS` - Can't redeem yet
+- `RESCUE_NOT_FOUND` - Invalid rescue ID
+- `ADOPTION_NOT_FOUND` - Invalid adoption ID
+- `UNAUTHORIZED` - Not authorized to perform action
+- `INVALID_STATUS_TRANSITION` - Can't change status
+- `PHOTOS_REQUIRED` - Need at least 1 photo
 
 ---
 
-## Stamp Collection Flow
+## Rescue Flow
 
 ```
-1. User scans QR → App gets merchantId
-2. Validate: merchant exists, is active
-3. Validate: user within 50m (geofence)
-4. Validate: no stamp today (daily limit)
-5. Get/create StampCard (with locked reward terms)
-6. Create Stamp record
-7. If currentStamps == lockedStampsRequired:
-   → Update status to READY_TO_REDEEM
-8. Return stamp + card + isComplete flag
+1. User reports rescue → photos, location, quantity, notes
+2. Validate: min 1 photo, valid location, quantity 1-20
+3. Create Rescue record with status HELP_NEEDED
+4. Send push notifications to nearby users (5km radius)
+5. Rescuer marks "Help Reached" → status = HELP_REACHED
+6. Rescuer creates Adoptions (one per animal)
+7. Each Adoption gets status SEARCHING_ADOPTION
+8. Adopter contacts via WhatsApp, coordinates
+9. Rescuer marks "Adopted" → status = ADOPTED
+10. Green pin appears on Success tab for 7 days
 ```
 
 ---
@@ -243,6 +267,9 @@ bun test
 # Flutter
 flutter test
 flutter analyze
+
+# Run migrations
+bunx prisma migrate dev
 ```
 
 ---
@@ -250,163 +277,137 @@ flutter analyze
 ## GitHub Workflow
 
 ### Branch Strategy
-
 ```
-main        ← Production releases only (protected)
-  ↑
-develop     ← Integration branch (default, protected)
-  ↑
-feature/*   ← Feature branches
-fix/*       ← Bug fixes
+main        ← Production releases (simple, no protection for MVP)
 ```
-
-### Branch Protection
-
-Both `main` and `develop` are protected:
-- Requires 1 approval before merge
-- Stale approvals dismissed on new commits
-- No force pushes
-- No deletions
-
-### Feature Development Workflow
-
-**1. Create GitHub Issue first:**
-```bash
-# Create a feature issue
-gh issue create --title "feat(stamps): add geofence validation" \
-  --body "## Description
-Add 50m geofence check for stamp collection.
-
-## Tasks
-- [ ] Add distance calculation helper
-- [ ] Validate location in collect endpoint
-- [ ] Return appropriate error if out of range" \
-  --label "enhancement"
-
-# Create a bug fix issue
-gh issue create --title "fix(auth): handle expired OTP" \
-  --body "OTP verification fails silently when expired." \
-  --label "bug"
-```
-
-**2. Create branch from issue:**
-```bash
-# This creates a branch linked to the issue
-gh issue develop <issue-number> --checkout
-
-# Branch name auto-generated: <issue-number>-feat-stamps-add-geofence-validation
-```
-
-**3. Make changes & commit:**
-```bash
-git add .
-git commit -m "feat(stamps): add geofence validation"
-```
-
-**4. Push & create PR:**
-```bash
-git push -u origin HEAD
-gh pr create --base develop --title "feat(stamps): add geofence validation" --body "$(cat <<'EOF'
-## Summary
-- Added 50m geofence validation for stamp collection
-
-## Changes
-- Added `calculateDistance()` helper using Haversine formula
-- Validate user location in `/stamps/collect` endpoint
-
-Fixes #<issue-number>
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
-```
-
-**5. After approval, merge to develop**
-
-**6. Release to production:**
-```bash
-git checkout main
-git pull origin main
-git merge develop
-git push origin main
-```
-
-### Issue Labels
-
-| Label | Description |
-|-------|-------------|
-| `enhancement` | New feature |
-| `bug` | Bug fix |
-| `documentation` | Docs only |
-| `backend` | Backend changes |
-| `flutter` | Flutter app changes |
-| `priority:high` | Urgent |
 
 ### Commit Message Convention
-
 ```
 type(scope): description
 
 Types: feat, fix, docs, refactor, test, chore
-Scope: auth, stamps, rewards, merchant, user, backend, core
+Scope: rescue, adoption, auth, map, backend, core
 ```
 
 Examples:
-- `feat(stamps): add geofence validation`
+- `feat(rescue): add create rescue endpoint`
+- `feat(map): implement 3-tab map interface`
 - `fix(auth): handle expired OTP`
-- `docs: update API reference`
-
-### Quick Reference
-
-```bash
-# Create issue
-gh issue create --title "type(scope): description" --label "enhancement"
-
-# Create branch from issue (auto-links in GitHub)
-gh issue develop <N> --checkout
-
-# View issue
-gh issue view <N>
-
-# Create PR that closes issue
-gh pr create --base develop --body "Fixes #N"
-```
 
 ---
 
-## Implementation Flow
+## Implementation Flow (2-Day Sprint)
 
-1. Read relevant doc section
-2. Check if schema exists in Prisma
-3. Implement backend API first
-4. Build Flutter UI from wireframe specs
-5. Test manually
+1. Backend: Rescue + Adoption APIs
+2. Backend: Push notifications
+3. Flutter: Models, Repositories, BLoCs
+4. Flutter: Create rescue_app
+5. Flutter: Map screen with 3 tabs
+6. Flutter: Report rescue flow
+7. Flutter: Create adoption flow
+8. Deploy + Test
+
+---
+
+## MVP Scope (No Feature Creep!)
+
+✅ **Building:**
+- Phone OTP auth (already works)
+- Report rescue (photos, location, quantity)
+- Mark help reached
+- Create adoptions (one per animal)
+- Mark adopted
+- 3-tab map (Rescue/Adoption/Success)
+- WhatsApp contact button
+- Push notifications
+- Basic filters (species)
+
+❌ **NOT building:**
+- In-app chat (WhatsApp only)
+- User profiles/reputation
+- Foster network
+- Vet coordination
+- Donations
+- Advanced filters
+- Pet matching
+- Admin dashboard
+- Social sharing
+
+---
+
+## Don'ts
+
+- ❌ Don't use Firebase Auth (we have custom OTP via MSG91)
+- ❌ Don't throw exceptions (use Result pattern)
+- ❌ Don't hardcode colors (use theme/AppColors)
+- ❌ Don't use bang operator (use null-aware)
+- ❌ Don't add features beyond 3 tabs (no feature creep!)
+- ❌ Don't build in-app chat (WhatsApp only)
+- ❌ Don't use single Pet model (use Rescue + Adoption)
+
+---
+
+## WhatsApp Integration
+
+Pre-filled messages for contact buttons:
+
+**Contact Reporter (from rescue alert):**
+```dart
+final message = Uri.encodeComponent(
+  "Hi! I saw your rescue alert on Paws for the ${rescue.species}. "
+  "I can help. Are you still at the location?"
+);
+final url = "https://wa.me/${rescue.reporterPhone}?text=$message";
+launchUrl(Uri.parse(url));
+```
+
+**Contact Rescuer (from adoption listing):**
+```dart
+final message = Uri.encodeComponent(
+  "Hi! I'm interested in adopting ${adoption.name ?? 'the ${adoption.species}'} "
+  "you rescued. Is ${adoption.gender == 'male' ? 'he' : 'she'} still available?"
+);
+final url = "https://wa.me/${adoption.rescuerPhone}?text=$message";
+launchUrl(Uri.parse(url));
+```
 
 ---
 
 ## Session Handoff
 
 Start new sessions with:
-> "Read .cursorrules and continue from where we left off."
+> "Read .cursorrules and continue the 2-day sprint from where we left off."
 
 ---
 
 ## Help Templates
 
-**New feature:** "Let's implement [feature]. Step by step."
-**Flutter screen:** "Build the [screen] from wireframes. Step by step."
+**Backend:** "Implement the [endpoint] following Result pattern and Zod validation."
+**Flutter:** "Build [screen] following BLoC pattern with proper error handling."
 **Stuck:** "Getting [error]. Tried [X]. What am I missing?"
-**API endpoint:** "Implement the [endpoint] from the API docs."
 
 ---
 
-## Don'ts
+## Quick Commands
 
-- ❌ Don't use Firebase Auth (we have custom OTP)
-- ❌ Don't throw exceptions (use Result pattern)
-- ❌ Don't hardcode colors (use theme/AppColors)
-- ❌ Don't use bang operator (use null-aware)
-- ❌ Don't skip geofence validation
-- ❌ Don't allow multiple stamps per day
-- ❌ Don't modify locked fields on existing StampCards
-- ❌ Don't process payments (UPI is external)
+```bash
+# Backend
+cd backend
+bun install
+bun run docker:up
+bun run db:migrate
+bun run dev
+
+# Flutter
+cd packages/rescue_core
+flutter pub get
+flutter pub run build_runner build --delete-conflicting-outputs
+
+# Create app
+cd apps
+flutter create rescue_app --org com.paws
+
+# Deploy
+railway up  # Backend
+flutter build apk --release  # Flutter
+```

@@ -3,12 +3,20 @@
 **Version:** 1.0
 **Date:** January 2026
 **Status:** MVP Specification
+**Timeline:** 2-Day Sprint
+**Target:** Community Gift - Solid, No-Feature-Creep MVP
 
 ---
 
 ## Executive Summary
 
 **Paws** is a map-first mobile application that visualizes pet rescue operations across a city. It complements existing WhatsApp-based rescue coordination by providing spatial awareness and discovery.
+
+**Development Approach:**
+- **Timeline:** 2 days end-to-end
+- **Philosophy:** Community first, feature creep never
+- **Scope:** Only 3 tabs - Rescue → Adoption → Happy Moments
+- **Auth:** Phone OTP only (already working)
 
 ### Core Value Proposition
 - **For Rescuers:** See all active rescues on a map, coordinate spatially
